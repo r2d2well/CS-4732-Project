@@ -1,50 +1,55 @@
 import cv2
 import os
 import numpy as np
-
-#Path to dataset
-dataset_path = "dataset"
-if not os.path.exists(dataset_path):
-    os.makedirs(dataset_path)
+import pandas as pd
+from student import Student
 
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+user = None
 
 #Function to load stored face images
-def load_faces():
-    faces_db = {}
-    for file in os.listdir(dataset_path):
-        if file.endswith(".jpg"):
-            user_id = file.split(".")[1]
-            img = cv2.imread(os.path.join(dataset_path, file), cv2.IMREAD_GRAYSCALE)
-            faces_db[user_id] = img
-    return faces_db
+def load_all_students():
+    print("Loading Student Data")
+    students = []
+    csv_filePath = "data.csv"
+    try:
+        df = pd.read_csv(csv_filePath)
+        for _, row in df.iterrows():
+            student = Student(
+                student_id=row["ID"],
+                name=row["Name"],
+                swipes=int(row["Swipes"]),
+                dining_dollars=float(row["Dining Dollars"]),
+            )
+            students.append(student)
+
+    except Exception as e:
+        print(f"Error loading students from {csv_filePath}: {e}")
+
+    return students  #Returns a list of Student objects
 
 #Function to compare faces
-def compare_faces(face, faces_db):
+def compare_faces(face, students):
     best_match = None
     best_score = float("-inf")  #Higher = closer match
 
-    for user_id, stored_face in faces_db.items():
-        resized_face = cv2.resize(face, (stored_face.shape[1], stored_face.shape[0]))
+    for student in students:
+        student_photo_gray = cv2.cvtColor(student.photo, cv2.COLOR_BGR2GRAY)
+        resized_face = cv2.resize(face, (student_photo_gray.shape[1], student_photo_gray.shape[0]))
 
-        result = cv2.matchTemplate(stored_face, resized_face, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(student_photo_gray, resized_face, cv2.TM_CCOEFF_NORMED)
 
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
         if max_val > 0.7:  #Threshold for similarity
-            best_match = user_id
+            best_match = student
             best_score = max_val
 
-    return best_match if best_match else "Unknown"
+    return best_match if best_match else None
 
-#Function to register a new user
-def add_new_user(face):
-    user_id = len(os.listdir(dataset_path)) + 1  #Assign new user ID (Should be student ID in actual deployment)
-    file_path = f"{dataset_path}/User.{user_id}.jpg"
-    cv2.imwrite(file_path, face)
-    print(f"User {user_id} registered successfully!")
-
+students = load_all_students()
 #Start the webcam
+print("Starting Camera")
 cam = cv2.VideoCapture(0)
 
 while True:
@@ -55,21 +60,18 @@ while True:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-    #Load stored faces
-    faces_db = load_faces()
-
     for (x, y, w, h) in faces:
         face = gray[y:y+h, x:x+w]
-        user = compare_faces(face, faces_db)
+        user = compare_faces(face, students)
 
         #Display the results
-        text = f"User {user}" if user != "Unknown" else "Unknown (Press 'N' to Register)"
+        text = f"User {user.name} (Press E to checkin)" if user != None else "Unknown"
         cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-        #Register a new face if user presses 'N'
-        if user == "Unknown" and cv2.waitKey(1) & 0xFF == ord("n"):
-            add_new_user(face)
+        if user != None and cv2.waitKey(1) & 0xFF == ord("e"):
+            user.checkin()
+
 
     cv2.imshow("Face Recognition", frame)
 
