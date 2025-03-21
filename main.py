@@ -1,11 +1,13 @@
 import cv2
 import os
+import time
 import numpy as np
 import pandas as pd
 from student import Student
 
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 user = None
+scanning = False
 
 #Function to load stored face images
 def load_all_students():
@@ -27,6 +29,12 @@ def load_all_students():
         print(f"Error loading students from {csv_filePath}: {e}")
 
     return students  #Returns a list of Student objects
+
+def add_new_user(face):
+    user_id = len(os.listdir("./photos")) + 1  # Assign new user ID
+    file_path = f"./photos/User.{user_id}.jpg"
+    cv2.imwrite(file_path, face)
+    print(f"User {user_id} registered successfully!")
 
 #Function to compare faces
 def compare_faces(face, students):
@@ -51,6 +59,8 @@ students = load_all_students()
 #Start the webcam
 print("Starting Camera")
 cam = cv2.VideoCapture(0)
+message = ""
+message_time = 0
 
 while True:
     ret, frame = cam.read()
@@ -60,18 +70,40 @@ while True:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
+    if cv2.waitKey(1) & 0xFF == ord("e"):
+        message = "Scanning"
+        scanning = True
+
     for (x, y, w, h) in faces:
         face = gray[y:y+h, x:x+w]
         user = compare_faces(face, students)
 
         #Display the results
-        text = f"User {user.name} (Press E to checkin)" if user != None else "Unknown"
-        cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        if scanning and user != None:
+            output = user.checkin()
+            if (output == None):
+                text = f"User {user.name} checkedin"
+            else:
+                text = output
+                message_time = time.time()
+            scanning = False
+            message = ""
 
-        if user != None and cv2.waitKey(1) & 0xFF == ord("e"):
-            user.checkin()
+        else:
+            text = f"User {user.name} (Press E to checkin)" if user != None else "Unknown (press 'n' to register new user)"
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
+        if user == None and cv2.waitKey(1) & 0xFF == ord("n"):
+            add_new_user(face)
+
+        cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 255, 0), 2)
+
+    frame_width = frame.shape[1]
+
+    text_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, .7, 2)[0]
+    text_x = (frame_width - text_size[0]) // 2
+
+    cv2.putText(frame, message, (text_x, 30), cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 255), 2)
 
     cv2.imshow("Face Recognition", frame)
 
