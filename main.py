@@ -3,13 +3,22 @@ import os
 import time
 import numpy as np
 import pandas as pd
+import threading
 from student import Student
 
+#Load OpenCV's pre-trained face detector
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-user = None
-scanning = False
 
-#Function to load stored face images
+#Global variables for threading
+frame = None
+running = True
+scanning = False
+message = ""
+user = None
+students = []
+detected_faces = []
+
+#Load student data
 def load_all_students():
     print("Loading Student Data")
     students = []
@@ -24,91 +33,109 @@ def load_all_students():
                 dining_dollars=float(row["Dining Dollars"]),
             )
             students.append(student)
-
     except Exception as e:
         print(f"Error loading students from {csv_filePath}: {e}")
+    return students
 
-    return students  #Returns a list of Student objects
-
-def add_new_user(face):
-    user_id = len(os.listdir("./photos")) + 1  # Assign new user ID
-    file_path = f"./photos/User.{user_id}.jpg"
-    cv2.imwrite(file_path, face)
-    print(f"User {user_id} registered successfully!")
-
-#Function to compare faces
+#Face comparison function
 def compare_faces(face, students):
     best_match = None
     best_score = float("-inf")  #Higher = closer match
 
     for student in students:
-        student_photo_gray = cv2.cvtColor(student.photo, cv2.COLOR_BGR2GRAY)
-        resized_face = cv2.resize(face, (student_photo_gray.shape[1], student_photo_gray.shape[0]))
+        try:
+            student_photo_gray = cv2.cvtColor(student.photo, cv2.COLOR_BGR2GRAY)
+            resized_face = cv2.resize(face, (student_photo_gray.shape[1], student_photo_gray.shape[0]))
+            result = cv2.matchTemplate(student_photo_gray, resized_face, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
 
-        result = cv2.matchTemplate(student_photo_gray, resized_face, cv2.TM_CCOEFF_NORMED)
-
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-        if max_val > 0.7:  #Threshold for similarity
-            best_match = student
-            best_score = max_val
+            if max_val > 0.7:
+                best_match = student
+                best_score = max_val
+        except Exception as e:
+            print(f"Error comparing faces: {e}")
 
     return best_match if best_match else None
 
+#Camera capture function (runs in a separate thread)
+def capture_camera():
+    global frame, running
+    cam = cv2.VideoCapture(0)
+
+    while running:
+        ret, temp_frame = cam.read()
+        if ret:
+            frame = temp_frame
+
+    cam.release()
+
+#Face detection function (runs in a separate thread)
+def detect_faces():
+    global frame, user, message, detected_faces, scanning
+
+    while running:
+        if frame is None:
+            continue 
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+        detected_faces = faces
+
+        for (x, y, w, h) in faces:
+            face = gray[y:y+h, x:x+w]
+            user = compare_faces(face, students)
+
+        #If scanning mode is active, attempt to check in
+        if scanning and user:
+            output = user.checkin()
+            time.sleep(2)
+            scanning = False 
+
+# Start multi-threading
 students = load_all_students()
-#Start the webcam
+camera_thread = threading.Thread(target=capture_camera, daemon=True)
+face_thread = threading.Thread(target=detect_faces, daemon=True)
+camera_thread.start()
+face_thread.start()
+
+#Main UI Loop (Runs in the main thread)
 print("Starting Camera")
-cam = cv2.VideoCapture(0)
-message = ""
-message_time = 0
 
 while True:
-    ret, frame = cam.read()
-    if not ret:
-        break
+    if frame is not None:
+        display_frame = frame.copy()
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        #Draw bounding boxes around detected faces
+        for (x, y, w, h) in detected_faces:
+            color = (0, 255, 0) if user else (0, 0, 255)
+            cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
 
-    if cv2.waitKey(1) & 0xFF == ord("e"):
-        message = "Scanning"
-        scanning = True
+            #Display name or prompt message above the bounding box
+            text = user.name if user else "Unknown"
+            cv2.putText(display_frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-    for (x, y, w, h) in faces:
-        face = gray[y:y+h, x:x+w]
-        user = compare_faces(face, students)
-
-        #Display the results
-        if scanning and user != None:
-            output = user.checkin()
-            if (output == None):
-                text = f"User {user.name} checkedin"
-            else:
-                text = output
-                message_time = time.time()
-            scanning = False
-            message = ""
+        if scanning:
+            message = "Scanning"
 
         else:
-            text = f"User {user.name} (Press E to checkin)" if user != None else "Unknown (press 'n' to register new user)"
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            message = ""
 
-        if user == None and cv2.waitKey(1) & 0xFF == ord("n"):
-            add_new_user(face)
+        #Display central message
+        if message:
+            (text_width, text_height), baseline = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
 
-        cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 255, 0), 2)
+            x = (display_frame.shape[1] - text_width) // 2
 
-    frame_width = frame.shape[1]
+            cv2.putText(display_frame, message, (x, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    text_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, .7, 2)[0]
-    text_x = (frame_width - text_size[0]) // 2
+        cv2.imshow("Face Recognition", display_frame)
 
-    cv2.putText(frame, message, (text_x, 30), cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 255), 2)
-
-    cv2.imshow("Face Recognition", frame)
-
-    if cv2.waitKey(1) & 0xFF == ord("q"):  #Quits on 'q' 
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord("q"):
+        running = False
         break
+    elif key == ord("e"):
+        scanning = True
 
-cam.release()
 cv2.destroyAllWindows()
